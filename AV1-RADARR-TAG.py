@@ -2,7 +2,7 @@ import requests
 
 # Configuration
 api_key = 'YOUR_API_KEY'
-radarr_url = 'http://localhost:7878/api/v3/movie'  # Adjust if you have a different port or host
+radarr_url = 'http://localhost:50026/api/movie'  # Updated to use your specific IP and port
 headers = {'X-Api-Key': api_key}
 
 def get_movies():
@@ -19,13 +19,14 @@ def main():
     movies = get_movies()
     av1_tag = 'AV1'  # Tag to add
     for movie in movies:
-        for file in movie.get('movieFile', {}).get('mediaInfo', {}).get('videoCodec', ''):
-            if 'av1' in file.lower():
+        # Ensure movieFile and mediaInfo are present and not None
+        if 'movieFile' in movie and movie['movieFile'] and 'mediaInfo' in movie['movieFile']:
+            media_info = movie['movieFile']['mediaInfo']
+            if 'videoCodec' in media_info and 'av1' in media_info['videoCodec'].lower():
                 current_tags = movie.get('tags', [])
                 if av1_tag not in current_tags:
                     current_tags.append(av1_tag)
                     update_movie(movie['id'], current_tags)
-                break
 
 if __name__ == '__main__':
     main()
