@@ -4,122 +4,107 @@ import shutil
 
 # Configuration
 api_key = 'API_KEY'
-radarr_url = 'http://IP_ADDRESS:PORT/api/v3'
+radarr_url = 'URL:PORT/api/v3'
 headers = {'X-Api-Key': api_key}
-backup_directory = 'Y:/Backup/Movies'
-backup_tags = ['backed-up', '2tb-436', '8tb-249']
+backup_directory = 'D:/Backup/Movies'
+backup_tag = 'backed-up'  # Tag for backed-up movies
+av1_tag = 'av1'  # Tag for AV1 movies
 
 # Path translation mapping
 path_mappings = {
     '/files': 'X:/',
-    '/21TB': 'Z:/'
+    '/21TB': 'Z:/',
+    '/Atlas': 'A:/'
 }
 
 def translate_path(docker_path):
-    # Normalize the docker path to handle both forward and backward slashes
     docker_path = docker_path.replace('\\', '/')
     for docker_prefix, local_prefix in path_mappings.items():
         if docker_path.startswith(docker_prefix):
-            translated_path = docker_path.replace(docker_prefix, local_prefix, 1)
-            return os.path.normpath(translated_path)
-    return os.path.normpath(docker_path)  # Return the original path if no mapping is found
+            return os.path.normpath(docker_path.replace(docker_prefix, local_prefix, 1))
+    return os.path.normpath(docker_path)
 
 def get_movies():
     response = requests.get(f'{radarr_url}/movie', headers=headers)
-    print('Fetched movies - Response Status Code:', response.status_code)
     if response.status_code == 200:
         return response.json()
     else:
-        print('Failed to fetch movies - Response Content:', response.content)
+        print(f'Failed to fetch movies - Response Content: {response.content}')
         return None
 
 def get_tags():
     response = requests.get(f'{radarr_url}/tag', headers=headers)
-    print('Fetched tags - Response Status Code:', response.status_code)
     if response.status_code == 200:
         return response.json()
     else:
-        print('Failed to fetch tags - Response Content:', response.content)
+        print(f'Failed to fetch tags - Response Content: {response.content}')
         return None
 
 def update_movie(movie):
     update_url = f'{radarr_url}/movie/{movie["id"]}'
-    data = {
-        'id': movie['id'],
-        'title': movie['title'],
-        'year': movie['year'],
-        'monitored': movie['monitored'],
-        'qualityProfileId': movie['qualityProfileId'],
-        'rootFolderPath': movie['rootFolderPath'],
-        'tags': movie['tags'],
-        'addOptions': movie.get('addOptions', {}),
-        'path': movie['path'],
-        'minimumAvailability': movie.get('minimumAvailability', 'released'),
-        'profileId': movie.get('profileId', movie.get('qualityProfileId', 1)),
-        'languageProfileId': movie.get('languageProfileId', 1)
-    }
-    print(f'Updating movie {movie["id"]} - Data: {data}')
-    response = requests.put(update_url, json=data, headers=headers)
-    print('Update response - Status Code:', response.status_code)
+    response = requests.put(update_url, json=movie, headers=headers)
     if response.status_code != 200:
-        print('Update failed - Response Content:', response.content)
+        print(f'Failed to update movie {movie["title"]} - Response Content: {response.content}')
 
 def copy_movie_to_backup(movie):
     docker_path = movie['path']
     local_path = translate_path(docker_path)
     destination_path = os.path.join(backup_directory, os.path.basename(local_path))
-    print(f'Translated path: {local_path}')
-    print(f'Copying from {local_path} to {destination_path}')
+    
     if not os.path.exists(local_path):
         print(f'Source path does not exist: {local_path}')
         return False
+
     try:
         shutil.copytree(local_path, destination_path)
-        print(f'Successfully copied {movie["title"]}')
+        print(f'Successfully backed up {movie["title"]}')
         return True
     except Exception as e:
-        print(f'Failed to copy {movie["title"]} - Error: {e}')
+        print(f'Failed to back up {movie["title"]} - Error: {e}')
         return False
 
 def main():
     movies = get_movies()
     if movies is None:
-        print("Failed to fetch movies")
         return
 
     tags = get_tags()
     if tags is None:
-        print("Failed to fetch tags")
         return
 
-    av1_tag = 'av1'
-    av1_tag_id = None
-    backup_tag_ids = []
-
-    for tag in tags:
-        if tag['label'].lower() == av1_tag:
-            av1_tag_id = tag['id']
-        if tag['label'].lower() in [t.lower() for t in backup_tags]:
-            backup_tag_ids.append(tag['id'])
+    av1_tag_id = next((tag['id'] for tag in tags if tag['label'].lower() == av1_tag), None)
+    backup_tag_id = next((tag['id'] for tag in tags if tag['label'].lower() == backup_tag), None)
 
     if av1_tag_id is None:
         print(f"Tag '{av1_tag}' not found. Please create the tag in Radarr and rerun the script.")
         return
 
-    if not backup_tag_ids:
-        print(f"No backup tags found. Please create the tags '{backup_tags}' in Radarr and rerun the script.")
+    if backup_tag_id is None:
+        print(f"Tag '{backup_tag}' not found. Please create the tag in Radarr and rerun the script.")
         return
 
     for movie in movies:
-        if 'movieFile' in movie and movie['movieFile'] and 'mediaInfo' in movie['movieFile']:
-            media_info = movie['movieFile']['mediaInfo']
-            if 'videoCodec' in media_info and 'av1' in media_info['videoCodec'].lower():
-                current_tags = movie.get('tags', [])
-                if av1_tag_id in current_tags and not any(tag in current_tags for tag in backup_tag_ids):
+        if 'movieFile' in movie and movie['movieFile']:
+            current_tags = movie.get('tags', [])
+            docker_path = movie['path']
+            local_path = translate_path(docker_path)
+            destination_path = os.path.join(backup_directory, os.path.basename(local_path))
+
+            # Check if the movie has the AV1 tag and does not have the backup tag
+            if av1_tag_id in current_tags and backup_tag_id not in current_tags:
+                # Check if the movie is already backed up
+                if os.path.exists(destination_path):
+                    print(f'Movie {movie["title"]} already exists in backup, adding "backed-up" tag.')
+                    current_tags.append(backup_tag_id)
+                    movie['tags'] = current_tags
+                    update_movie(movie)
+                else:
+                    # Backup the movie and add the backup tag
                     if copy_movie_to_backup(movie):
-                        current_tags.append(backup_tag_ids[0])  # Add the "backed-up" tag
+                        current_tags.append(backup_tag_id)  # Add the "backed-up" tag
                         movie['tags'] = current_tags
                         update_movie(movie)
 
 if __name__ == '__main__':
     main()
+
